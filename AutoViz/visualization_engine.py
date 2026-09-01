@@ -13,20 +13,22 @@ def generate_visualizations(df, profile):
     temporal_cols = profile['roles']['temporal']
     categorical_entities = profile['roles']['categorical_entity']
     categorical_binaries = profile['roles']['categorical_binary']
-    measures = profile['roles']['measure']
-    primary_metrics = profile['primary_metrics']
+    
+    # Define our targets
+    target_metrics = profile['primary_metrics']
+    if not target_metrics:
+        # Fallback to secondary if no primary exists
+        target_metrics = profile['secondary_metrics']
+        
     theme = profile['theme']
     
-    # 1. Time Series
-    if temporal_cols and primary_metrics:
-        for t_col in temporal_cols[:2]:
-            for m_col in primary_metrics[:2]:
+    # 1. Time Series (Highest Priority)
+    if temporal_cols and target_metrics:
+        for t_col in temporal_cols[:1]: # usually one primary time axis is enough
+            for m_col in target_metrics[:2]:
                 agg_func = get_agg_func(m_col, theme)
-                score = 10 # High priority
+                score = 15 # Highest priority
                 
-                # We need to aggregate by time in case there are multiple entries per timestamp
-                # For simplicity, we just sort and plot, Plotly handles it relatively well, 
-                # but an aggregation is better. Let's do a simple group by.
                 try:
                     if agg_func == 'sum':
                         agg_df = df.groupby(t_col)[m_col].sum().reset_index()
@@ -52,18 +54,17 @@ def generate_visualizations(df, profile):
                 except:
                     pass
 
-    # 2. Aggregate Comparison (Bar Charts)
-    if categorical_entities and primary_metrics:
-        for cat_col in categorical_entities[:3]: # limit to top 3
-            for m_col in primary_metrics[:3]:
-                # Score based on cardinality (ideal is 3-15)
+    # 2. Aggregate Comparison (Bar Charts with Entities)
+    if categorical_entities and target_metrics:
+        for cat_col in categorical_entities[:3]:
+            for m_col in target_metrics[:2]:
                 cardinality = df[cat_col].nunique()
                 if cardinality > 40:
-                    continue # Too many bars
+                    continue 
                     
-                score = 8
+                score = 10
                 if 3 <= cardinality <= 15:
-                    score += 2
+                    score = 12 # Ideal cardinality
                     
                 agg_func = get_agg_func(m_col, theme)
                 
@@ -75,7 +76,6 @@ def generate_visualizations(df, profile):
                         agg_df = df.groupby(cat_col)[m_col].mean().reset_index()
                         title = f"Average {m_col} by {cat_col}"
                         
-                    # Sort for better visualization
                     agg_df = agg_df.sort_values(by=m_col, ascending=False).head(20)
                     
                     fig = px.bar(agg_df, x=cat_col, y=m_col, 
@@ -96,80 +96,77 @@ def generate_visualizations(df, profile):
                 except:
                     pass
 
-    # 3. Composition (Pie Charts)
-    all_cats = categorical_entities + categorical_binaries
-    if all_cats:
-        for cat_col in all_cats:
-            cardinality = df[cat_col].nunique()
-            if cardinality <= 7:
-                score = 5
-                if cardinality == 2: score += 1 # Binaries are good for pies
-                
+    # 3. Aggregate Comparison (Bar Charts with Binaries)
+    if categorical_binaries and target_metrics:
+        for cat_col in categorical_binaries[:2]:
+            for m_col in target_metrics[:2]:
+                score = 11
+                agg_func = get_agg_func(m_col, theme)
                 try:
-                    fig = px.pie(df, names=cat_col, hole=0.4, 
-                                 title=f"Distribution of {cat_col}",
-                                 template="plotly_white")
+                    if agg_func == 'sum':
+                        agg_df = df.groupby(cat_col)[m_col].sum().reset_index()
+                        title = f"Total {m_col} by {cat_col}"
+                    else:
+                        agg_df = df.groupby(cat_col)[m_col].mean().reset_index()
+                        title = f"Average {m_col} by {cat_col}"
+                        
+                    fig = px.bar(agg_df, x=cat_col, y=m_col, 
+                                 title=title,
+                                 template="plotly_white",
+                                 color=cat_col)
                                  
                     candidates.append({
-                        "id": f"pie_{cat_col}",
-                        "title": f"{cat_col} Breakdown",
-                        "desc": f"Shows the proportion of each {cat_col}.",
+                        "id": f"bar_{cat_col}_{m_col}",
+                        "title": f"{m_col} by {cat_col}",
+                        "desc": f"Compares {m_col} between {cat_col} groups.",
                         "fig": fig,
                         "score": score,
-                        "type": "pie",
+                        "type": "bar",
                         "x": cat_col,
-                        "y": None
+                        "y": m_col
                     })
                 except:
                     pass
 
-    # 4. Correlation (Scatter Plot)
-    if len(measures) >= 2:
-        # Check pairs of top measures
-        for i in range(min(3, len(measures))):
-            for j in range(i+1, min(4, len(measures))):
-                col1, col2 = measures[i], measures[j]
-                
+    # 4. Correlation (Target-Aware Scatter Plot)
+    if target_metrics and profile['secondary_metrics']:
+        for m_col in target_metrics[:2]:
+            for s_col in profile['secondary_metrics'][:3]:
+                if m_col == s_col: continue
                 try:
-                    correlation = df[col1].corr(df[col2])
+                    correlation = df[m_col].corr(df[s_col])
                     if pd.isna(correlation): continue
                     
-                    # Score based on correlation strength
                     abs_corr = abs(correlation)
-                    if abs_corr < 0.1:
-                        score = 2
-                    elif abs_corr < 0.3:
-                        score = 4
-                    elif abs_corr < 0.7:
-                        score = 7
-                    else:
-                        score = 9
+                    if abs_corr < 0.2:
+                        continue # Skip weak correlations entirely to reduce noise
                         
-                    # Cap sample size to avoid slow rendering
+                    score = 5 + int(abs_corr * 4) # Scale up to 9
+                    
                     sample_df = df.sample(min(1000, len(df))) if len(df) > 1000 else df
                     
-                    fig = px.scatter(sample_df, x=col1, y=col2, 
-                                     title=f"{col1} vs {col2}",
+                    fig = px.scatter(sample_df, x=s_col, y=m_col, 
+                                     title=f"{m_col} vs {s_col}",
                                      template="plotly_white",
                                      trendline="ols" if len(sample_df) > 5 else None,
                                      opacity=0.7)
                                      
                     candidates.append({
-                        "id": f"scatter_{col1}_{col2}",
-                        "title": f"Correlation: {col1} vs {col2}",
-                        "desc": f"Visualizes the relationship between {col1} and {col2}.",
+                        "id": f"scatter_{s_col}_{m_col}",
+                        "title": f"Correlation: {m_col} vs {s_col}",
+                        "desc": f"Visualizes the relationship between {m_col} and {s_col}.",
                         "fig": fig,
                         "score": score,
                         "type": "scatter",
-                        "x": col1,
-                        "y": col2
+                        "x": s_col,
+                        "y": m_col
                     })
                 except:
                     pass
 
     # 5. Distribution (Histogram)
-    if primary_metrics:
-        for m_col in primary_metrics[:2]:
+    if target_metrics:
+        for m_col in target_metrics[:2]:
             score = 6
             try:
                 fig = px.histogram(df, x=m_col, marginal="box", 
@@ -189,8 +186,32 @@ def generate_visualizations(df, profile):
             except:
                 pass
 
+    # 6. Fallback Composition (Pie Charts) - Only if no better charts
+    all_cats = categorical_entities + categorical_binaries
+    if all_cats:
+        for cat_col in all_cats:
+            cardinality = df[cat_col].nunique()
+            if cardinality <= 5:
+                score = 3 # Very low priority compared to target-aware charts
+                try:
+                    fig = px.pie(df, names=cat_col, hole=0.4, 
+                                 title=f"Distribution of {cat_col}",
+                                 template="plotly_white")
+                                 
+                    candidates.append({
+                        "id": f"pie_{cat_col}",
+                        "title": f"{cat_col} Breakdown",
+                        "desc": f"Shows the proportion of each {cat_col}.",
+                        "fig": fig,
+                        "score": score,
+                        "type": "pie",
+                        "x": cat_col,
+                        "y": None
+                    })
+                except:
+                    pass
+
     # Redundancy Filtering & Selection
-    # Sort by score descending
     candidates.sort(key=lambda x: x['score'], reverse=True)
     
     selected_charts = []
@@ -199,21 +220,20 @@ def generate_visualizations(df, profile):
     type_counts = {}
     
     for cand in candidates:
-        if len(selected_charts) >= 6: # max 6 charts
+        if len(selected_charts) >= 6: 
             break
             
         c_type = cand['type']
         
-        # Avoid too many of the same type (unless bar charts which are versatile)
-        if type_counts.get(c_type, 0) >= 2 and c_type != 'bar':
+        # Don't strictly limit bar charts, they are usually the best
+        if type_counts.get(c_type, 0) >= 1 and c_type in ['pie', 'histogram']:
             continue
-        if type_counts.get(c_type, 0) >= 3 and c_type == 'bar':
+        if type_counts.get(c_type, 0) >= 2 and c_type == 'scatter':
             continue
             
-        # Avoid exact same X and Y combination
         xy_combo = f"{cand['x']}_{cand['y']}"
         if cand['x'] and cand['y']:
-             if xy_combo in used_x: # reusing used_x as a combo tracker for simplicity here
+             if xy_combo in used_x: 
                  continue
                  
         selected_charts.append(cand)

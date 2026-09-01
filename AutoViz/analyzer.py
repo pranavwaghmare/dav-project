@@ -37,17 +37,22 @@ def detect_semantic_role(col_name, series):
 
     # 4. Measure vs Categorical Entity
     if pd.api.types.is_numeric_dtype(series):
-        # Even if numeric, it might be an entity (like Store=1,2,3 or Branch=1,2,3)
-        # Or a year (e.g. Year=2023, 2024)
         if 'year' in col_name_lower and 1900 <= clean_series.min() <= 2100 and clean_series.max() <= 2100:
              return 'temporal'
              
         if has_id_keyword:
              return 'identifier' # numeric ids
              
-        if num_unique <= 15 and unique_ratio < 0.1:
-            return 'categorical_entity'
-            
+        is_int = pd.api.types.is_integer_dtype(series)
+        
+        # Entities can have higher cardinality if they are integers (e.g., Store=1..45)
+        if num_unique <= 100 and (is_int or unique_ratio < 0.05):
+             # Don't classify obvious measures as entities unless they are really small cardinality
+             if num_unique <= 15:
+                 return 'categorical_entity'
+             elif is_int and not any(k in col_name_lower for k in ['salary', 'sales', 'revenue', 'amount', 'price', 'profit', 'cgpa', 'score', 'temperature', 'fuel', 'cpi', 'unemployment']):
+                 return 'categorical_entity'
+                 
         return 'measure'
     else:
         # Non-numeric
@@ -75,12 +80,13 @@ def detect_theme(df):
         return best_theme
     return 'Generic'
 
-def detect_primary_metrics(df, measure_cols):
+def detect_metrics(df, measure_cols):
     """
     Ranks measurement columns by analytical importance based on semantics.
+    Returns (primary_metrics, secondary_metrics)
     """
     if not measure_cols:
-        return []
+        return [], []
         
     tier1_kws = ['sales', 'revenue', 'salary', 'total', 'amount', 'price', 'profit', 'cgpa', 'score', 'mark']
     tier2_kws = ['quantity', 'attendance', 'rate', 'margin', 'count']
@@ -96,8 +102,12 @@ def detect_primary_metrics(df, measure_cols):
         else:
             others.append(col)
             
-    # Return ordered list of metrics
-    return tier1 + tier2 + others
+    if tier1:
+        return tier1, tier2 + others
+    elif tier2:
+        return tier2, others
+    else:
+        return others, []
 
 def profile_dataset(df):
     """
@@ -116,7 +126,8 @@ def profile_dataset(df):
             'categorical_entity': [],
             'measure': []
         },
-        'primary_metrics': []
+        'primary_metrics': [],
+        'secondary_metrics': []
     }
     
     for col in df.columns:
@@ -124,6 +135,8 @@ def profile_dataset(df):
         if role in profile['roles']:
              profile['roles'][role].append(col)
              
-    profile['primary_metrics'] = detect_primary_metrics(df, profile['roles']['measure'])
+    p, s = detect_metrics(df, profile['roles']['measure'])
+    profile['primary_metrics'] = p
+    profile['secondary_metrics'] = s
                  
     return profile

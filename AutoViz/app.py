@@ -40,6 +40,7 @@ if uploaded_file is not None:
         
         st.markdown(f"**Detected Theme:** {profile['theme']}")
         st.markdown(f"**Detected Primary Metrics:** {', '.join(profile['primary_metrics']) if profile['primary_metrics'] else 'None'}")
+        st.markdown(f"**Detected Secondary Metrics:** {', '.join(profile['secondary_metrics']) if profile['secondary_metrics'] else 'None'}")
         
         st.markdown(f"**Semantic Column Roles:**")
         st.write(f"- Temporal (Dates/Times): {', '.join(profile['roles']['temporal']) if profile['roles']['temporal'] else 'None'}")
