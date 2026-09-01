@@ -1,59 +1,62 @@
 import pandas as pd
 import numpy as np
 
+def get_agg_func(col_name, theme='Generic'):
+    """
+    Determines the appropriate aggregation function (sum or mean) based on metric semantics.
+    """
+    col_lower = str(col_name).lower()
+    
+    sum_kws = ['sales', 'revenue', 'total', 'amount', 'quantity', 'profit']
+    mean_kws = ['price', 'salary', 'cgpa', 'attendance', 'rate', 'score', 'mark', 'age', 'margin', 'performance']
+    
+    if any(kw in col_lower for kw in sum_kws):
+        return 'sum'
+    if any(kw in col_lower for kw in mean_kws):
+        return 'mean'
+        
+    # Fallback to theme if semantics are ambiguous
+    if theme == 'Sales':
+        return 'sum'
+    elif theme in ['HR', 'Education']:
+        return 'mean'
+    
+    return 'mean' # Safe default
+
 def generate_kpis(df, profile):
     """
-    Generates dynamic KPIs based on the dataset.
+    Generates dynamic KPIs based on the primary metrics and dataset theme.
     """
     kpis = []
-    
-    # Always show total records
     kpis.append({"label": "Total Records", "value": profile['total_rows']})
     
-    numerical_cols = profile['columns']['numerical']
+    primary_metrics = profile['primary_metrics']
+    theme = profile['theme']
     
-    if not numerical_cols:
+    if not primary_metrics:
         return kpis
         
-    # Find important metrics to show as KPIs
-    # Look for keywords in numerical columns
-    for col in numerical_cols:
-        col_lower = str(col).lower()
-        if 'cgpa' in col_lower or 'gpa' in col_lower or 'mark' in col_lower or 'score' in col_lower:
+    # Take up to 2 primary metrics for KPIs
+    for col in primary_metrics[:2]:
+        agg_func = get_agg_func(col, theme)
+        
+        if agg_func == 'sum':
+            total_val = df[col].sum()
+            avg_val = df[col].mean()
+            # Format nicely
+            if total_val > 1000:
+                kpis.append({"label": f"Total {col}", "value": f"{total_val/1000:.1f}k"})
+            else:
+                kpis.append({"label": f"Total {col}", "value": f"{total_val:.2f}"})
+                
+            kpis.append({"label": f"Avg {col}", "value": f"{avg_val:.2f}"})
+        else:
             avg_val = df[col].mean()
             max_val = df[col].max()
-            kpis.append({"label": f"Average {col}", "value": f"{avg_val:.2f}"})
+            kpis.append({"label": f"Avg {col}", "value": f"{avg_val:.2f}"})
             kpis.append({"label": f"Highest {col}", "value": f"{max_val:.2f}"})
-            break # Just do one main score
             
-    for col in numerical_cols:
-        col_lower = str(col).lower()
-        if 'attendance' in col_lower:
-            avg_val = df[col].mean()
-            kpis.append({"label": f"Average {col}", "value": f"{avg_val:.2f}%"})
-            
-            # Count below 75 if it seems like a percentage
-            if df[col].max() <= 100:
-                 below_75 = len(df[df[col] < 75])
-                 kpis.append({"label": f"Below 75% {col}", "value": below_75})
-            break
-            
-    for col in numerical_cols:
-        col_lower = str(col).lower()
-        if 'package' in col_lower or 'salary' in col_lower or 'lpa' in col_lower:
-             avg_val = df[col].mean()
-             max_val = df[col].max()
-             kpis.append({"label": f"Average {col}", "value": f"{avg_val:.2f}"})
-             kpis.append({"label": f"Highest {col}", "value": f"{max_val:.2f}"})
-             break
-
-    # If we didn't find any specific keywords, just take the first numerical column
-    if len(kpis) == 1 and numerical_cols:
-        col = numerical_cols[0]
-        avg_val = df[col].mean()
-        kpis.append({"label": f"Average {col}", "value": f"{avg_val:.2f}"})
-
-    return kpis[:4] # Return at most 4 KPIs
+    return kpis[:4]
 
 def generate_insights(df, profile):
     """
@@ -61,51 +64,37 @@ def generate_insights(df, profile):
     """
     insights = []
     
-    numerical_cols = profile['columns']['numerical']
-    categorical_cols = profile['columns']['categorical']
+    primary_metrics = profile['primary_metrics']
+    categorical_entities = profile['roles']['categorical_entity']
+    theme = profile['theme']
     
-    if not numerical_cols:
+    if not primary_metrics:
         return ["Not enough numerical data to generate deep insights."]
         
-    # 1. Insight: Categorical group with highest average for a numerical metric
-    if categorical_cols and numerical_cols:
-        cat_col = categorical_cols[0]
-        num_col = numerical_cols[0]
+    # 1. Insight: Categorical group with highest aggregate for a primary metric
+    if categorical_entities and primary_metrics:
+        cat_col = categorical_entities[0]
+        num_col = primary_metrics[0]
         
-        # Try to find a 'better' numerical column (like CGPA or Package)
-        for col in numerical_cols:
-            if any(k in str(col).lower() for k in ['cgpa', 'package', 'salary', 'mark']):
-                num_col = col
-                break
-                
-        # Try to find a 'better' categorical column (like Branch or Department)
-        for col in categorical_cols:
-             if any(k in str(col).lower() for k in ['branch', 'dept', 'department', 'course']):
-                 cat_col = col
-                 break
-                 
-        avg_by_cat = df.groupby(cat_col)[num_col].mean().sort_values(ascending=False)
-        if len(avg_by_cat) > 1:
-            top_cat = avg_by_cat.index[0]
-            insights.append(f"**{top_cat}** has the highest average **{num_col}** among all {cat_col}s.")
+        agg_func = get_agg_func(num_col, theme)
+        
+        if agg_func == 'sum':
+            agg_by_cat = df.groupby(cat_col)[num_col].sum().sort_values(ascending=False)
+            agg_word = "total"
+        else:
+            agg_by_cat = df.groupby(cat_col)[num_col].mean().sort_values(ascending=False)
+            agg_word = "average"
             
-    # 2. Insight: Percentage condition (e.g., Attendance)
-    for col in numerical_cols:
-        if 'attendance' in str(col).lower() and df[col].max() <= 100:
-            below_75 = len(df[df[col] < 75])
-            total = len(df)
-            if total > 0:
-                pct = (below_75 / total) * 100
-                insights.append(f"**{pct:.1f}%** of records have **{col}** below 75%.")
-            break
+        if len(agg_by_cat) > 1:
+            top_cat = agg_by_cat.index[0]
+            insights.append(f"**{top_cat}** has the highest {agg_word} **{num_col}** among all {cat_col}s.")
             
-    # 3. Insight: Correlation
-    if len(numerical_cols) >= 2:
-        # Find two most interesting columns
-        col1, col2 = numerical_cols[0], numerical_cols[1]
-        for c in numerical_cols:
-            if 'attendance' in str(c).lower(): col1 = c
-            if 'cgpa' in str(c).lower(): col2 = c
+    # 2. Insight: Correlation
+    measures = profile['roles']['measure']
+    if len(measures) >= 2:
+        # Take top 2 metrics
+        col1 = measures[0] if len(primary_metrics) < 1 else primary_metrics[0]
+        col2 = measures[1] if len(primary_metrics) < 2 else primary_metrics[1]
             
         if col1 != col2:
             correlation = df[col1].corr(df[col2])

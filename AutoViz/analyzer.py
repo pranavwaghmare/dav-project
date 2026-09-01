@@ -1,78 +1,129 @@
 import pandas as pd
 import numpy as np
-import re
 
-def is_identifier_column(col_name, series):
+def detect_semantic_role(col_name, series):
     """
-    Heuristics to detect if a column is an identifier (ID, Roll Number, etc.)
+    Identifies the semantic role of a column rather than just its raw dtype.
+    Roles: temporal, identifier, categorical_binary, categorical_entity, measure
     """
     col_name_lower = str(col_name).lower()
+    clean_series = series.dropna()
+    num_unique = clean_series.nunique()
+    total_valid = len(clean_series)
     
-    # Common identifier names
-    id_keywords = ['id', 'roll', 'reg', 'email', 'phone', 'mobile', 'contact', 'uuid', 'guid', 'slno', 's.no', 'serial']
+    if total_valid == 0:
+        return 'unknown'
+        
+    unique_ratio = num_unique / total_valid
+
+    # 1. Temporal
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return 'temporal'
+
+    # 2. Categorical Binary
+    if num_unique == 2:
+        return 'categorical_binary'
+
+    # 3. Identifier
+    id_keywords = ['id', 'roll', 'reg', 'email', 'phone', 'contact', 'uuid', 'guid']
+    has_id_keyword = any(keyword in col_name_lower.split('_') or keyword == col_name_lower for keyword in id_keywords)
     
-    # Check if any id_keyword is a distinct word in the column name or exactly matches
-    for keyword in id_keywords:
-        if keyword in col_name_lower.split('_') or keyword in col_name_lower.split(' ') or keyword == col_name_lower:
-            # Check if it has a high number of unique values (most IDs are unique per row)
-            if len(series.dropna()) > 0 and len(series.unique()) / len(series.dropna()) > 0.8:
-                return True
-                
-    # Phone numbers or emails often have distinct patterns or highly unique string types
-    if series.dtype == 'object' and len(series.dropna()) > 0:
-        unique_ratio = len(series.unique()) / len(series.dropna())
-        if unique_ratio > 0.95: 
-            # Could be names or emails
-            return True
+    if has_id_keyword and unique_ratio > 0.8:
+        return 'identifier'
+    
+    if series.dtype == 'object' and unique_ratio > 0.95:
+        # High cardinality text is likely an identifier or free text, not useful for grouping
+        return 'identifier'
+
+    # 4. Measure vs Categorical Entity
+    if pd.api.types.is_numeric_dtype(series):
+        # Even if numeric, it might be an entity (like Store=1,2,3 or Branch=1,2,3)
+        # Or a year (e.g. Year=2023, 2024)
+        if 'year' in col_name_lower and 1900 <= clean_series.min() <= 2100 and clean_series.max() <= 2100:
+             return 'temporal'
+             
+        if has_id_keyword:
+             return 'identifier' # numeric ids
+             
+        if num_unique <= 15 and unique_ratio < 0.1:
+            return 'categorical_entity'
             
-    return False
+        return 'measure'
+    else:
+        # Non-numeric
+        if num_unique <= 20 or unique_ratio < 0.5:
+            return 'categorical_entity'
+        else:
+            return 'identifier' # Fallback for high-cardinality text
+
+def detect_theme(df):
+    """
+    Guesses the dataset theme based on column names to provide context.
+    """
+    cols = ' '.join(df.columns).lower()
+    
+    themes = {
+        'Sales': ['order', 'product', 'price', 'quantity', 'sales', 'revenue', 'customer', 'store', 'discount'],
+        'HR': ['employee', 'salary', 'department', 'attrition', 'performance', 'hire', 'manager'],
+        'Education': ['student', 'branch', 'mark', 'cgpa', 'attendance', 'semester', 'course']
+    }
+    
+    theme_scores = {theme: sum(1 for kw in keywords if kw in cols) for theme, keywords in themes.items()}
+    
+    best_theme = max(theme_scores, key=theme_scores.get)
+    if theme_scores[best_theme] >= 2:
+        return best_theme
+    return 'Generic'
+
+def detect_primary_metrics(df, measure_cols):
+    """
+    Ranks measurement columns by analytical importance based on semantics.
+    """
+    if not measure_cols:
+        return []
+        
+    tier1_kws = ['sales', 'revenue', 'salary', 'total', 'amount', 'price', 'profit', 'cgpa', 'score', 'mark']
+    tier2_kws = ['quantity', 'attendance', 'rate', 'margin', 'count']
+    
+    tier1, tier2, others = [], [], []
+    
+    for col in measure_cols:
+        col_lower = str(col).lower()
+        if any(kw in col_lower for kw in tier1_kws):
+            tier1.append(col)
+        elif any(kw in col_lower for kw in tier2_kws):
+            tier2.append(col)
+        else:
+            others.append(col)
+            
+    # Return ordered list of metrics
+    return tier1 + tier2 + others
 
 def profile_dataset(df):
     """
-    Analyzes the dataframe and returns a dictionary of column types and dataset stats.
+    Analyzes the dataframe and returns a semantic profile.
     """
-    stats = {
+    profile = {
         'total_rows': len(df),
         'total_columns': len(df.columns),
         'missing_values': df.isnull().sum().sum(),
         'duplicate_rows': df.duplicated().sum(),
-        'columns': {
-            'numerical': [],
-            'categorical': [],
-            'datetime': [],
-            'identifiers': []
-        }
+        'theme': detect_theme(df),
+        'roles': {
+            'temporal': [],
+            'identifier': [],
+            'categorical_binary': [],
+            'categorical_entity': [],
+            'measure': []
+        },
+        'primary_metrics': []
     }
     
     for col in df.columns:
-        series = df[col]
-        
-        # Check if identifier
-        if is_identifier_column(col, series):
-            stats['columns']['identifiers'].append(col)
-            continue
-            
-        # Check if datetime
-        if pd.api.types.is_datetime64_any_dtype(series):
-            stats['columns']['datetime'].append(col)
-            continue
-            
-        # Check numerical vs categorical
-        if pd.api.types.is_numeric_dtype(series):
-            # Sometimes categorical data is encoded as numbers (e.g., 0, 1 for Gender)
-            # If a numeric column has very few unique values, it might be categorical
-            unique_count = series.nunique()
-            if unique_count <= 10 and unique_count < len(df) * 0.1:
-                 stats['columns']['categorical'].append(col)
-            else:
-                 stats['columns']['numerical'].append(col)
-        else:
-            # Non-numeric, non-datetime -> categorical
-            unique_count = series.nunique()
-            # If it has too many unique values, it might just be free text or names (already caught mostly by identifier logic, but just in case)
-            if unique_count > 0 and unique_count < len(df) * 0.5:
-                stats['columns']['categorical'].append(col)
-            else:
-                 stats['columns']['identifiers'].append(col) # Fallback for high-cardinality text
+        role = detect_semantic_role(col, df[col])
+        if role in profile['roles']:
+             profile['roles'][role].append(col)
+             
+    profile['primary_metrics'] = detect_primary_metrics(df, profile['roles']['measure'])
                  
-    return stats
+    return profile

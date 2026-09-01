@@ -38,10 +38,15 @@ if uploaded_file is not None:
         col3.metric("Missing Values", profile['missing_values'])
         col4.metric("Duplicate Rows", profile['duplicate_rows'])
         
-        st.markdown(f"**Detected Column Types:**")
-        st.write(f"- Numerical: {', '.join(profile['columns']['numerical']) if profile['columns']['numerical'] else 'None'}")
-        st.write(f"- Categorical: {', '.join(profile['columns']['categorical']) if profile['columns']['categorical'] else 'None'}")
-        st.write(f"- Identifiers/Text: {', '.join(profile['columns']['identifiers']) if profile['columns']['identifiers'] else 'None'}")
+        st.markdown(f"**Detected Theme:** {profile['theme']}")
+        st.markdown(f"**Detected Primary Metrics:** {', '.join(profile['primary_metrics']) if profile['primary_metrics'] else 'None'}")
+        
+        st.markdown(f"**Semantic Column Roles:**")
+        st.write(f"- Temporal (Dates/Times): {', '.join(profile['roles']['temporal']) if profile['roles']['temporal'] else 'None'}")
+        st.write(f"- Measures (Continuous/Count): {', '.join(profile['roles']['measure']) if profile['roles']['measure'] else 'None'}")
+        st.write(f"- Categorical Entities: {', '.join(profile['roles']['categorical_entity']) if profile['roles']['categorical_entity'] else 'None'}")
+        st.write(f"- Binary Categories: {', '.join(profile['roles']['categorical_binary']) if profile['roles']['categorical_binary'] else 'None'}")
+        st.write(f"- Identifiers/Text: {', '.join(profile['roles']['identifier']) if profile['roles']['identifier'] else 'None'}")
         st.divider()
         
         # KPIs
